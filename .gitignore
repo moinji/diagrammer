@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# 로컬 실행 중 생기는 것
+.vite/

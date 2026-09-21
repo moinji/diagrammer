@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>다이아그래머 자체 점검</title>
+  <style>
+    body { font-family: Pretendard, system-ui, sans-serif; background:#0b0d11; color:#e7eaf0; margin:0; padding:24px; }
+    h1 { font-size:18px; margin:0 0 4px; }
+    .sub { color:#6b7385; font-size:13px; margin-bottom:18px; }
+    table { border-collapse:collapse; width:100%; font-size:12.5px; }
+    th, td { text-align:left; padding:7px 10px; border-bottom:1px solid #1e2430; vertical-align:top; }
+    th { color:#6b7385; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+    .ok { color:#46d18a; } .bad { color:#ff6b6b; } .mono { font-family:ui-monospace,Menlo,monospace; }
+    .summary { margin:14px 0 20px; padding:12px 14px; border-radius:10px; background:#12151b; border:1px solid #262c38; font-size:14px; }
+  </style>
+</head>
+<body>
+  <h1>다이아그래머 자체 점검</h1>
+  <div class="sub">
+    라벨 왕복(이스케이프·디코딩), 코드 수렴, 도형/화살표 매핑을 실제 mermaid 로 검사합니다.
+    <span class="mono">npm run dev</span> 중에 <span class="mono">/selftest.html</span> 로 접속하세요.
+  </div>
+  <div class="summary" id="summary">돌리는 중…</div>
+  <table id="out"><thead><tr><th style="width:150px">항목</th><th style="width:60px">결과</th><th>내용</th></tr></thead><tbody></tbody></table>
+
+<script type="module">
+import { importMermaid } from '/src/core/mermaid/importer.ts'
+import { sceneToMermaid, escapeLabel, safeMermaidId, isSafeMermaidId } from '/src/core/mermaid/emitter.ts'
+import { parseMermaid } from '/src/core/mermaid/engine.ts'
+
+const tbody = document.querySelector('#out tbody')
+let pass = 0, fail = 0
+
+function row(name, ok, detail) {
+  ok ? pass++ : fail++
+  const tr = document.createElement('tr')
+  tr.innerHTML = `<td>${name}</td><td class="${ok ? 'ok' : 'bad'}">${ok ? '통과' : '실패'}</td><td class="mono">${String(detail).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</td>`
+  tbody.appendChild(tr)
+}
+
+// ── 1. 라벨 왕복 ─────────────────────────────────────────────
+// 코드 → Scene 으로 갔다가 다시 코드로 돌아왔을 때 글자가 그대로인가.
+// 여기서 깨지면 사용자는 "저장했더니 글자가 사라졌다"를 겪는다.
+const LABELS = [
+  '간단한 한글',
+  'English mixed 한글',
+  '따옴표 "인용" 포함',
+  "작은따옴표 '인용'",
+  '부등호 a < b 그리고 c > d',
+  '태그처럼 <b 개> 보이는 것',
+  '샵 #해시태그 와 #35',
+  '앰퍼샌드 A & B',
+  '대괄호 [안쪽] 과 중괄호 {안쪽}',
+  '괄호 (안쪽) 과 파이프 |구분|',
+  '이모지 🚀 ✅ 다이어그램',
+  '줄바꿈\n두번째 줄',
+  '퍼센트 100% 달성',
+  '세미콜론; 콜론: 쉼표,',
+  '역슬래시 \\ 경로',
+  '숫자만 12345',
+]
+
+async function roundTripLabel(label) {
+  const code = `flowchart TD\n    A${escapeLabel(label).replace(/^/, '[').replace(/$/, ']')}\n`
+  const res = await importMermaid(code, { themeId: 'midnight' })
+  if (!res.ok) return { ok: false, detail: '파싱 실패: ' + res.issue.message }
+  const node = Object.values(res.doc.elements).find(e => e.kind === 'node')
+  if (!node) return { ok: false, detail: '노드를 찾지 못함' }
+  const got = node.text
+  return { ok: got === label, detail: got === label ? JSON.stringify(got) : `기대 ${JSON.stringify(label)} → 실제 ${JSON.stringify(got)}` }
+}
+
+for (const label of LABELS) {
+  try {
+    const r = await roundTripLabel(label)
+    row('라벨: ' + label.slice(0, 18).replace(/\n/g, '\\n'), r.ok, r.detail)
+  } catch (e) {
+    row('라벨: ' + label.slice(0, 18), false, String(e))
+  }
+}
+
+// ── 2. 코드 수렴 ─────────────────────────────────────────────
+// 코드 → Scene → 코드 → Scene → 코드 가 안정되는가(무한히 바뀌면 diff 가 매번 더러워진다)
+const CONVERGE = [
+  'flowchart TD\n  A[시작] --> B{조건}\n  B -->|예| C[처리]\n  B -->|아니오| D[(저장)]',
+  'flowchart LR\n  subgraph 그룹1\n    A[하나] --> B[둘]\n  end\n  B --> C((끝))',
+  'flowchart TD\n  A[굵게] ==> B[점선]\n  B -.-> C[열림]\n  C --- D[원]\n  D --o E[십자]\n  E --x F[양방향]\n  A <--> F',
+  'flowchart TD\n  A[색칠] --> B[보통]\n  style A fill:#f96,stroke:#333,stroke-width:3px',
+]
+
+for (const [i, src] of CONVERGE.entries()) {
+  try {
+    const r1 = await importMermaid(src, { themeId: 'midnight' })
+    if (!r1.ok) { row(`수렴 #${i + 1}`, false, '1차 파싱 실패: ' + r1.issue.message); continue }
+    const c1 = sceneToMermaid(r1.doc, { includeLayout: false }).code
+    const r2 = await importMermaid(c1, { themeId: 'midnight' })
+    if (!r2.ok) { row(`수렴 #${i + 1}`, false, '재파싱 실패: ' + r2.issue.message + ' / ' + c1); continue }
+    const c2 = sceneToMermaid(r2.doc, { includeLayout: false }).code
+    row(`수렴 #${i + 1}`, c1 === c2, c1 === c2 ? c1.split('\n')[0] + ' …' : `1차\n${c1}\n2차\n${c2}`)
+  } catch (e) {
+    row(`수렴 #${i + 1}`, false, String(e))
+  }
+}
+
+// ── 3. 도형 매핑 ─────────────────────────────────────────────
+const SHAPES = [
+  ['A[사각]', 'rect'], ['A(둥근)', 'round'], ['A([알약])', 'stadium'],
+  ['A[[서브]]', 'subroutine'], ['A[(원통)]', 'cylinder'], ['A((원))', 'circle'],
+  ['A(((이중)))', 'doublecircle'], ['A>비대칭]', 'asymmetric'], ['A{마름모}', 'diamond'],
+  ['A{{육각}}', 'hexagon'], ['A[/평행/]', 'parallelogram'], ['A[\\평행\\]', 'parallelogramAlt'],
+  ['A[/사다리\\]', 'trapezoid'], ['A[\\사다리/]', 'trapezoidAlt'],
+]
+for (const [syntax, expect] of SHAPES) {
+  try {
+    const res = await importMermaid(`flowchart TD\n    ${syntax}\n`, { themeId: 'midnight' })
+    const node = res.ok ? Object.values(res.doc.elements).find(e => e.kind === 'node') : null
+    row('도형 ' + syntax, !!node && node.shape === expect, node ? `${node.shape} (기대 ${expect})` : '파싱 실패')
+  } catch (e) { row('도형 ' + syntax, false, String(e)) }
+}
+
+// ── 4. 화살표 매핑 ───────────────────────────────────────────
+const ARROWS = [
+  ['-->', 'none', 'arrow'], ['---', 'none', 'none'], ['--o', 'none', 'circle'],
+  ['--x', 'none', 'cross'], ['<-->', 'arrow', 'arrow'], ['o--o', 'circle', 'circle'],
+  ['x--x', 'cross', 'cross'],
+]
+for (const [op, s, e] of ARROWS) {
+  try {
+    const res = await importMermaid(`flowchart TD\n    A[가] ${op} B[나]\n`, { themeId: 'midnight' })
+    const edge = res.ok ? Object.values(res.doc.elements).find(x => x.kind === 'edge') : null
+    const ok = !!edge && edge.startMarker === s && edge.endMarker === e
+    row('화살표 ' + op, ok, edge ? `${edge.startMarker}/${edge.endMarker} (기대 ${s}/${e})` : '파싱 실패')
+  } catch (err) { row('화살표 ' + op, false, String(err)) }
+}
+
+// ── 5. 식별자 안전성 ─────────────────────────────────────────
+const IDS = [
+  ['end', false], ['style', false], ['subgraph', false], ['o', false], ['x', false],
+  ['X', true], ['O', true], ['v', true], ['A', true], ['node1', true], ['_tmp', true],
+]
+for (const [id, expect] of IDS) {
+  row('id 안전 ' + JSON.stringify(id), isSafeMermaidId(id) === expect, `${isSafeMermaidId(id)} (기대 ${expect})`)
+}
+
+// 한글 라벨 → id 생성. 한글은 그대로 두되(diff 안정), 공백 등은 치환하고 중복은 피한다.
+{
+  const taken = new Set()
+  const a = safeMermaidId('결재 요청', taken, 'n1')
+  const b = safeMermaidId('결재 요청', taken, 'n2')
+  const code = `flowchart TD\n    ${a}["가"]\n    ${b}["나"]\n    ${a} --> ${b}\n`
+  const p = await parseMermaid(code)
+  row('한글 라벨 id 생성', p.ok && a !== b && isSafeMermaidId(a), p.ok ? `${a}, ${b}` : p.issue.message)
+}
+
+// 예약어를 노드 id 로 쓰는 코드가 실제로 통과하는지 (생성기 출력이 파싱되는지)
+{
+  const taken = new Set()
+  const bad = ['end', 'style', 'o', 'x', 'graph']
+  const ids = bad.map(s => safeMermaidId(s, taken))
+  const code = 'flowchart TD\n' + ids.map((id, i) => `    ${id}["${bad[i]}"]`).join('\n') + '\n'
+  const p = await parseMermaid(code)
+  row('예약어 회피 후 파싱', p.ok, p.ok ? ids.join(', ') : p.issue.message)
+}
+
+// ── 6. 편집 불가 타입 ────────────────────────────────────────
+for (const [name, code] of [
+  ['시퀀스', 'sequenceDiagram\n  A->>B: 안녕'],
+  ['클래스', 'classDiagram\n  class 동물\n  동물 <|-- 개'],
+  ['상태', 'stateDiagram-v2\n  [*] --> 대기'],
+  ['ER', 'erDiagram\n  고객 ||--o{ 주문 : 한다'],
+  ['간트', 'gantt\n  title 일정\n  dateFormat YYYY-MM-DD\n  section A\n  일 :a1, 2026-01-01, 5d'],
+  ['파이', 'pie\n  "가" : 30\n  "나" : 70'],
+]) {
+  try {
+    const res = await importMermaid(code, { themeId: 'midnight' })
+    const ok = res.ok && !res.doc.editable && !!res.doc.nativeSvg && !!res.doc.nativeSize?.w
+    row('뷰어 타입: ' + name, ok, res.ok ? `${res.doc.diagramType} / ${res.doc.nativeSize?.w}×${res.doc.nativeSize?.h}` : res.issue.message)
+  } catch (e) { row('뷰어 타입: ' + name, false, String(e)) }
+}
+
+// ── 7. 오류 처리 ─────────────────────────────────────────────
+for (const [name, code] of [
+  ['닫히지 않은 대괄호', 'flowchart TD\n  A[열기 --> B'],
+  ['종류 없음', '이건 그냥 글자입니다'],
+  ['빈 코드', '   '],
+]) {
+  const res = await importMermaid(code, { themeId: 'midnight' })
+  const handled = name === '빈 코드' ? res.ok : !res.ok && !!res.issue.message
+  row('오류: ' + name, handled, res.ok ? '정상 처리' : res.issue.message.split('\n')[0])
+}
+
+// ── 8. 리뷰에서 나온 회귀 항목 ──────────────────────────────
+// 한글 노드 id 를 그대로 유지하는가 (n1/n2 로 재작성되면 diff 가 못 쓰게 된다)
+{
+  const src = 'flowchart TD\n  시작 --> 끝\n'
+  const r = await importMermaid(src, { themeId: 'midnight' })
+  const code = r.ok ? sceneToMermaid(r.doc, { includeLayout: false }).code : ''
+  row('한글 id 유지', code.includes('시작') && code.includes('끝') && !/n1\[/.test(code), code.replace(/\n/g, ' | '))
+}
+
+// 중첩 subgraph 가 평탄화되지 않는가
+{
+  const src = 'flowchart TD\n  subgraph 외부\n    subgraph 내부\n      A[가]\n    end\n  end\n'
+  const r = await importMermaid(src, { themeId: 'midnight' })
+  const code = r.ok ? sceneToMermaid(r.doc, { includeLayout: false }).code : ''
+  const nested = /subgraph[^\n]*\n[\s\S]*?subgraph/.test(code)
+  const r2 = await importMermaid(code, { themeId: 'midnight' })
+  const groups2 = r2.ok ? Object.values(r2.doc.elements).filter(e => e.kind === 'group').length : -1
+  row('중첩 subgraph 유지', nested && groups2 === 2, `중첩=${nested}, 재파싱 그룹수=${groups2}`)
+}
+
+// 그룹이 코드 적용마다 늘어나지 않는가 (유령 subgraph)
+{
+  let doc = (await importMermaid('flowchart TD\n  subgraph 결제\n    A[승인]\n  end\n', { themeId: 'midnight' })).doc
+  let counts = []
+  for (let i = 0; i < 3; i++) {
+    const { code, midOf } = sceneToMermaid(doc, { includeLayout: false })
+    // 앱이 하는 것과 같이 mid 를 찍어 둔다
+    const stamped = { ...doc.elements }
+    for (const [id, mid] of midOf) {
+      const el = stamped[id]
+      if (!el || (el.kind !== 'node' && el.kind !== 'group')) continue
+      stamped[id] = { ...el, mid: el.kind === 'group' ? 'sg:' + mid : mid }
+    }
+    const res = await importMermaid(code, { themeId: 'midnight', prev: { ...doc, elements: stamped } })
+    if (!res.ok) { counts.push('파싱실패'); break }
+    doc = res.doc
+    counts.push(Object.values(doc.elements).filter(e => e.kind === 'group').length)
+  }
+  row('그룹 유령 증식 없음', counts.every(c => c === 1), '적용 3회 그룹수: ' + counts.join(', '))
+}
+
+// 타원: mermaid 12 는 A(-텍스트-) 를 거부한다(No such shape: ellipse).
+// 따라서 (1) 가져오기는 실패해야 정상이고, (2) 캔버스의 타원은 코드로 나갈 때 원으로 근사되며
+// (3) 그 코드는 반드시 다시 파싱돼야 한다. 여기서 깨지면 '열리지 않는 코드' 를 만들게 된다.
+{
+  const r = await importMermaid('flowchart TD\n  A(-타원-) --> B[끝]\n', { themeId: 'midnight' })
+  const base = await importMermaid('flowchart TD\n  A[가]\n', { themeId: 'midnight' })
+  const el = Object.values(base.doc.elements).find(e => e.kind === 'node')
+  const doc2 = { ...base.doc, elements: { ...base.doc.elements, [el.id]: { ...el, shape: 'ellipse' } } }
+  const { code, warnings } = sceneToMermaid(doc2, { includeLayout: false })
+  const p = await parseMermaid(code)
+  row('타원 근사 후 파싱', !r.ok && p.ok && warnings.length > 0,
+      `가져오기거부=${!r.ok}, 재파싱=${p.ok}, 경고=${warnings.length}`)
+}
+
+// 텍스트에 붙은 연결선이 빠져도 linkStyle 인덱스가 밀리지 않는가
+{
+  const r = await importMermaid('flowchart TD\n  A[가] --> B[나]\n  B --> C[다]\n', { themeId: 'midnight' })
+  const doc = r.doc
+  const nodes = Object.values(doc.elements).filter(e => e.kind === 'node')
+  const textId = 'txt_1'
+  const edgeId = 'e_txt'
+  const lastEdge = Object.values(doc.elements).find(e => e.kind === 'edge')
+  const doc2 = {
+    ...doc,
+    elements: {
+      ...doc.elements,
+      [textId]: { id: textId, kind: 'text', x: 0, y: 0, w: 100, h: 30, text: '메모', style: { ...nodes[0].style } },
+      [edgeId]: { ...lastEdge, id: edgeId, mid: undefined, source: nodes[0].id, target: textId,
+        style: { ...lastEdge.style, stroke: '#ff0000' } },
+    },
+    order: [...doc.order, textId, edgeId],
+  }
+  const { code } = sceneToMermaid(doc2, { includeLayout: false })
+  const p = await parseMermaid(code)
+  const idxs = [...code.matchAll(/linkStyle (\d+)/g)].map(m => Number(m[1]))
+  const linkCount = (code.match(/-->/g) || []).length
+  row('linkStyle 인덱스 안 밀림', p.ok && idxs.every(i => i < linkCount), p.ok ? `링크 ${linkCount}개, linkStyle ${idxs.join(',') || '없음'}` : p.issue.message)
+}
+
+document.getElementById('summary').innerHTML =
+  fail === 0
+    ? `<span class="ok">전부 통과 — ${pass}건</span>`
+    : `<span class="bad">실패 ${fail}건</span> / 통과 ${pass}건`
+</script>
+</body>
+</html>

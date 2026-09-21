@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>probe</title></head>
+<body><div id="out"></div>
+<script type="module">
+import mermaid from 'mermaid'
+window.mermaid = mermaid
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', htmlLabels: true })
+const samples = {
+  flow: `flowchart TD\n  A[시작] --> B{조건?}\n  B -->|예| C[처리 A]\n  B -->|아니오| D[(데이터)]\n  C --> E((끝))\n  D --> E`,
+  flowNoHtml: `flowchart LR\n  A[둥근 사각] --> B[/평행사변형/]\n  B --> C{{육각형}}`,
+  seq: `sequenceDiagram\n  Alice->>Bob: 안녕\n  Bob-->>Alice: 응`,
+  cls: `classDiagram\n  class Animal { +String name\n +eat() }\n  Animal <|-- Dog`,
+  er: `erDiagram\n  CUSTOMER ||--o{ ORDER : places`,
+  state: `stateDiagram-v2\n  [*] --> Idle\n  Idle --> Run: go`,
+}
+const results = {}
+for (const [k, code] of Object.entries(samples)) {
+  try {
+    const { svg, bindFunctions, diagramType } = await mermaid.render('probe_' + k, code)
+    results[k] = { ok: true, diagramType, svgLen: svg.length, svg }
+  } catch (e) { results[k] = { ok: false, err: String(e) } }
+}
+window.__PROBE__ = results
+document.getElementById('out').innerHTML = Object.values(results).map(r => r.svg || '').join('<hr/>')
+window.__READY__ = true
+</script></body></html>
