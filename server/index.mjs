@@ -573,7 +573,30 @@ if (SERVE_DIST) {
   }
 }
 
-app.listen(PORT, '127.0.0.1', () => {
+const server = app.listen(PORT, '127.0.0.1')
+
+/**
+ * 시작 실패는 반드시 시끄러워야 한다.
+ * 이 핸들러가 없으면 포트가 물렸을 때 "준비됨" 을 찍고 종료코드 0 으로 조용히 죽는다.
+ * 사용자는 서버가 떴다고 믿은 채 '파일 서버 꺼짐' 만 보게 되고, 원인을 찾을 단서가 없다.
+ */
+server.on('error', err => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n[다이아그래머] 포트 ${PORT} 를 이미 다른 프로그램이 쓰고 있습니다.`)
+    console.error('  전에 켜 둔 다이아그래머 서버일 가능성이 큽니다.\n')
+    console.error(`  누가 쓰는지 보기:  lsof -nP -iTCP:${PORT} -sTCP:LISTEN`)
+    console.error('  이전 서버 끄기:    pkill -f "node server/index.mjs"')
+    console.error(`  다른 포트로 실행:  DIAGRAMMER_PORT=5284 npm run dev\n`)
+  } else if (err.code === 'EACCES') {
+    console.error(`\n[다이아그래머] 포트 ${PORT} 에 접근할 권한이 없습니다. 다른 포트를 쓰세요.`)
+    console.error('  예:  DIAGRAMMER_PORT=5284 npm run dev\n')
+  } else {
+    console.error('\n[다이아그래머] 서버를 시작하지 못했습니다:', err.message, '\n')
+  }
+  process.exit(1)
+})
+
+server.on('listening', () => {
   const url = `http://127.0.0.1:${SERVE_DIST ? PORT : 5273}`
   console.log(`[다이아그래머] 파일 서버 준비됨  http://127.0.0.1:${PORT}`)
   console.log(`[다이아그래머] 데이터 디렉토리    ${DATA_DIR}`)
